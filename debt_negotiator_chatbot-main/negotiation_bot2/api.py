@@ -6,8 +6,11 @@ system prompt, one file.
 
 Account facts are read live from ``customer_schema`` in Debt_management_db —
 the same ``risk_grid_account_view`` that backs the Priority Targets grid — so a
-session opens against a real customer rather than hand-typed figures. Customer
-data stays read-only; conversation state is written only to ``chatbot``.
+session opens against a real customer rather than hand-typed figures.
+Conversation state is written to ``chatbot``. Customer data is read-only with
+one deliberate exception: a closed deal books a promise into
+``customer_schema.ptp``, because an agreement that exists only in a transcript
+never reaches the collections floor.
 
 The negotiation rules live in the prompt only. That is a deliberate divergence
 from the main build (CLAUDE.md law 2, which requires code enforcement) and it
@@ -25,12 +28,12 @@ import os
 import re
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import APIError, OpenAI
 from psycopg.rows import dict_row
@@ -89,6 +92,29 @@ STRATEGIES = (
     "REPAYMENT_NEGOTIATION",
 )
 
+# chatbot.turns and chatbot.sessions are shared with the Assure+ engagement
+# centre, and it seeds transcripts in its own vocabulary: speaker `bot`/`user`
+# where this file writes `collector`/`debtor`, and an upper-case session status.
+# Read both and keep writing ours. A conversation this bot cannot resume is one
+# the handoff cannot hand back, which is exactly the demo's live moment.
+# administration.master_data CHANNEL codes, which customer_schema.ptp has a
+# foreign key onto. A promise has to say where it was taken.
+PTP_CHANNEL = {"voice": "Voicebot", "chat": "Chat"}
+
+BOT_SPEAKERS = frozenset({"collector", "bot", "assistant"})
+CUSTOMER_SPEAKERS = frozenset({"debtor", "user", "customer"})
+AGENT_SPEAKERS = frozenset({"agent", "human_agent"})
+
+
+def _role(speaker: str | None) -> str:
+    """Map either transcript vocabulary onto the roles this API exposes."""
+    name = (speaker or "").lower()
+    if name in CUSTOMER_SPEAKERS:
+        return "user"
+    if name in AGENT_SPEAKERS:
+        return "agent"
+    return "assistant"
+
 # ---------------------------------------------------------------------------
 # SQL — customer data is read-only; conversation writes stay in chatbot.*
 # ---------------------------------------------------------------------------
@@ -135,6 +161,28 @@ where account_id = %(account_id)s and resolved_at is null
 order by filed_at
 """
 
+# What we have already said to them. Without this the bot negotiates blind: it
+# cannot answer "I got a text about a bill" and will contradict, or pointlessly
+# repeat, a message the customer is holding in their hand.
+ACTIVITY_SQL = """
+select occurred_at::date as on_date, activity_type, direction, channel_code,
+       subject, body, outcome
+from customer_schema.case_activity
+where account_id = %(account_id)s
+order by occurred_at desc
+limit 5
+"""
+
+# A promise is booked against the live case when there is one, so it shows up
+# on the case timeline rather than floating loose on the account.
+OPEN_CASE_SQL = """
+select id
+from customer_schema.debt_case
+where account_id = %(account_id)s and status <> 'CLOSED'
+order by opened_at desc
+limit 1
+"""
+
 PTP_SQL = """
 select ptp_code, promised_amount, promised_date, instalment_count, kept_amount, status
 from customer_schema.ptp
@@ -143,7 +191,8 @@ order by promised_date
 """
 
 SESSION_SQL = """
-select id, account_id, principal, days_overdue, status, agreement, created_at
+select id, account_id, principal, days_overdue, status, agreement, ledger,
+       created_at
 from chatbot.sessions
 where id = %(session_id)s
 """
@@ -153,6 +202,24 @@ select id, index, speaker, dialogue, created_at
 from chatbot.turns
 where session_id = %(session_id)s
 order by index, id
+"""
+
+# The handoff brief needs more than the transcript view: the strategy labels
+# show how the call was run, and the turn index locates the escalation.
+HANDOFF_TURNS_SQL = """
+select index, speaker, strategy, action, dialogue, created_at
+from chatbot.turns
+where session_id = %(session_id)s
+order by index, id
+"""
+
+# `to_jsonb(e) -> 'summary'` reads as NULL rather than erroring when the column
+# is absent, so this works both before and after the summary migration.
+ESCALATION_SQL = """
+select turn_index, trigger, detail, status, created_at,
+       to_jsonb(e) -> 'summary' as summary
+from chatbot.escalations e
+where session_id = %(session_id)s
 """
 
 
@@ -190,6 +257,7 @@ def _persist_session(session: "Session", acct: dict[str, Any]) -> None:
                     int(acct.get("dpd") or 0),
                     json.dumps({
                         "source": "negotiation_bot2",
+                        "channel": session.channel,
                         "customer_id": acct.get("customer_id"),
                         "subscriber_no": acct.get("subscriber_no"),
                     }),
@@ -251,7 +319,12 @@ def _persist_turn(
         raise HTTPException(502, f"could not persist chat message: {exc}") from exc
 
 
-def _persist_outcome(session: "Session", action: str, detail: str = "") -> None:
+def _persist_outcome(
+    session: "Session",
+    action: str,
+    detail: str = "",
+    trigger: str = "model_escalated",
+) -> None:
     agreement = session.agreement.model_dump() if session.agreement else None
     status_value = "escalated" if action == "escalate" else (
         "agreed" if session.outcome == "agreement" else (
@@ -282,7 +355,7 @@ def _persist_outcome(session: "Session", action: str, detail: str = "") -> None:
                     """
                     insert into chatbot.escalations
                         (session_id, turn_index, trigger, detail, status)
-                    values (%s, %s, 'customer_requested_agent', %s, 0)
+                    values (%s, %s, %s, %s, 0)
                     on conflict (session_id) do update set
                         trigger = excluded.trigger,
                         detail = excluded.detail,
@@ -290,7 +363,7 @@ def _persist_outcome(session: "Session", action: str, detail: str = "") -> None:
                             when chatbot.escalations.status = 2 then 2 else 0
                         end
                     """,
-                    (session.session_id, turn_index, detail),
+                    (session.session_id, turn_index, trigger, detail),
                 )
     except psycopg.Error as exc:
         raise HTTPException(502, f"could not persist chat outcome: {exc}") from exc
@@ -308,6 +381,29 @@ def _escalation_status(session_id: str) -> int | None:
     return int(rows[0]["status"]) if rows else None
 
 
+def _escalation_row(session_id: str) -> dict[str, Any] | None:
+    rows = _query(ESCALATION_SQL, {"session_id": session_id})
+    return rows[0] if rows else None
+
+
+def _persist_summary(session_id: str, summary: dict[str, Any]) -> None:
+    """Store the handover brief on the escalation the agent console reads.
+
+    Deliberately swallows its errors. A missing ``summary`` column — the state
+    before the migration lands — or a database that blinks must never take down
+    a live handoff, and ``GET /sessions/{id}/handoff`` rebuilds the brief on
+    demand when nothing was stored.
+    """
+    try:
+        with psycopg.connect(DSN, connect_timeout=10) as conn, conn.cursor() as cur:
+            cur.execute(
+                "update chatbot.escalations set summary = %s where session_id = %s",
+                (json.dumps(summary), session_id),
+            )
+    except psycopg.Error:
+        return
+
+
 # ---------------------------------------------------------------------------
 # Dossier — turning database rows into prompt facts
 # ---------------------------------------------------------------------------
@@ -317,8 +413,20 @@ def _money(value: Decimal | float | None, currency: str = "$") -> str:
     return "unknown" if value is None else f"{currency}{Decimal(str(value)):,.2f}"
 
 
+def _cents(value: Decimal) -> float:
+    """Round to the cent the way money is quoted — half up, not half to even.
+
+    ``round()`` would turn an instalment of exactly 243.125 into 243.12, which
+    is not the figure an agent reading the brief would say out loud.
+    """
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def _build_dossier(
-    acct: dict[str, Any], disputes: list[dict[str, Any]], ptps: list[dict[str, Any]]
+    acct: dict[str, Any],
+    disputes: list[dict[str, Any]],
+    ptps: list[dict[str, Any]],
+    activity: list[dict[str, Any]] | None = None,
 ) -> tuple[str, Decimal]:
     """Render the account into the fact block, and return the balance in play.
 
@@ -411,6 +519,24 @@ def _build_dossier(
                 )
             )
 
+    if activity:
+        lines += [
+            "",
+            "## WHAT WE HAVE ALREADY SENT THEM (most recent first)",
+            "They have seen these. Do not repeat one back at them as though it "
+            "were news, and do not contradict it.",
+        ]
+        for item in activity:
+            body = " ".join((item.get("body") or "").split())
+            lines.append(
+                f"  {item['on_date']} · {item['direction'].lower()} "
+                f"{item['activity_type']} on {item.get('channel_code')} · "
+                f"{item.get('subject')}"
+                + (f" · {item.get('outcome')}" if item.get("outcome") else "")
+            )
+            if body:
+                lines.append(f'      "{body[:220]}"')
+
     if disputes:
         lines += ["", "## OPEN DISPUTES (ring-fenced — not yours to settle)"]
         for d in disputes:
@@ -442,16 +568,58 @@ def _build_dossier(
 
 
 # ---------------------------------------------------------------------------
+# Channel — who established identity, and therefore how the first turn opens
+# ---------------------------------------------------------------------------
+
+# On the phone the bot dialled out and cannot know who picked up, so it must
+# verify before disclosing anything. In the engagement centre the customer
+# opened the chat from inside their own authenticated account, so the same
+# verification turn is dead weight — it burns the opening and reads as a
+# machine failing to recognise someone who just logged in.
+CHANNEL_BRIEFS = {
+    "voice": """\
+# CHANNEL — outbound phone call
+You dialled them and do not know who answered. Confirm you are speaking to the
+account holder BEFORE you disclose the balance or any account detail. Naming
+the debt to the wrong person is a serious breach. If they will not confirm,
+keep the account details to yourself and close the call politely.""",
+    "chat": """\
+# CHANNEL — inbound web chat, identity already established
+They opened this chat from inside their own account, so you already know who
+they are. Do NOT ask them to confirm their identity and do not spend a turn on
+verification — it is already done, and asking reads as a machine that cannot
+see who just logged in. Greet them by first name, state the balance plainly,
+and put a concrete way forward in the very first message. Keep every message
+short: this is a chat window, and a wall of text does not get read.""",
+}
+
+# What the model is told before it speaks first, per channel.
+OPENING_CUE = {
+    "voice": (
+        "[The customer has answered the call and has not spoken yet. "
+        "Open the conversation.]"
+    ),
+    "chat": (
+        "[The customer has just opened a chat from their account and has not "
+        "typed anything yet. Open with their balance and a concrete offer of "
+        "help, in two sentences.]"
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
 You are {agent_name}, a professional debt-collection negotiator employed by
-{creditor}. You are on a live call with a customer whose account is delinquent.
-Your job is to reach a concrete, affordable, fully-specified repayment
-agreement — not to punish, shame, or read policy at them.
+{creditor}. You are talking to a customer whose account is delinquent. Your job
+is to reach a concrete, affordable, fully-specified repayment agreement — not
+to punish, shame, or read policy at them.
 
 Today's date is {today}.
+
+{channel_brief}
 
 You are judged on two things at once, and optimising either alone is a failure:
   1. COLLECTION — the value actually recovered, and how soon.
@@ -657,6 +825,98 @@ TURN_SCHEMA: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
+# Handoff brief — what the human agent reads before taking the conversation
+# ---------------------------------------------------------------------------
+
+HANDOFF_SYSTEM_PROMPT = """\
+You are writing a handover note for a human debt-collection agent who is about
+to take over a live conversation from an automated negotiator. They will read
+it in the seconds before they type their first message. Assume they know the
+job and nothing about this call.
+
+You are given the account dossier the bot worked from, the full transcript, and
+why the conversation was handed over.
+
+RULES
+- Report only what is in the transcript or the dossier. If the customer never
+  said what they earn, do not infer it. No invented figures, no guesses, no
+  filling of gaps with what a customer like this usually says.
+- For anything the customer claimed, stay close to their own words. The agent
+  needs to know what was actually said to them, not your reading of it.
+- commitments_made is the highest-stakes field. Anything the bot offered,
+  conceded, or promised now binds the agent, who cannot walk it back without
+  losing the customer. Put terms in money, not only percentages. Empty list if
+  the bot committed to nothing.
+- cautions is what the agent must NOT do: a ring-fenced dispute they must not
+  argue, distress or vulnerability, a legal representative now involved, a line
+  the bot already tried that failed and would irritate on a second outing.
+- Never present an internal score (risk, cooperation, responsibility,
+  contactability, recovery probability) as something to say to the customer.
+  The agent may see them; the customer must never hear them.
+- Plain factual sentences. This is an internal note, not customer-facing copy.
+  No greetings, no sign-off, no encouragement.
+"""
+
+HANDOFF_NARRATIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "headline",
+        "what_happened",
+        "customer_position",
+        "disclosed_facts",
+        "commitments_made",
+        "open_threads",
+        "cautions",
+        "suggested_next_step",
+    ],
+    "properties": {
+        "headline": {
+            "type": "string",
+            "description": "One line, under 120 characters: who, what they owe, "
+            "and why this landed in the queue.",
+        },
+        "what_happened": {
+            "type": "string",
+            "description": "Two to four sentences on how the call went.",
+        },
+        "customer_position": {
+            "type": "string",
+            "description": "What the customer said they can and cannot do, in "
+            "their terms. 'Not stated' if they never said.",
+        },
+        "disclosed_facts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Concrete things the customer volunteered: pay dates, "
+            "income, job change, other debts. Transcript only.",
+        },
+        "commitments_made": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Every offer or concession the bot put on the table, "
+            "in money. Empty if none.",
+        },
+        "open_threads": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Questions asked and never answered; anything left "
+            "hanging when the bot stepped back.",
+        },
+        "cautions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "What the agent must not do or say on this account.",
+        },
+        "suggested_next_step": {
+            "type": "string",
+            "description": "The single most useful opening move for the agent.",
+        },
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
 
@@ -705,6 +965,11 @@ class StartRequest(BaseModel):
     subscriber_no: str | None = None
     account_code: str | None = None
 
+    # "chat" is the AI Engagement Center: the customer is already signed in, so
+    # the bot skips verification and opens on the balance. "voice" keeps the
+    # outbound-call behaviour, where it must verify first.
+    channel: Literal["voice", "chat"] = "voice"
+
 
 class MessageRequest(BaseModel):
     model_config = ConfigDict(
@@ -731,6 +996,8 @@ class TurnResponse(BaseModel):
     closed: bool
     thoughts: str
     escalation_status: int | None = None
+    ptp_code: str | None = None
+    ptp_error: str | None = None
 
 
 class StoredMessage(BaseModel):
@@ -767,17 +1034,70 @@ class TranscriptResponse(BaseModel):
     dossier: str
 
 
+class HandoffNarrative(BaseModel):
+    """The model-written half of the brief. Absent if the call failed."""
+
+    headline: str
+    what_happened: str
+    customer_position: str
+    disclosed_facts: list[str] = Field(default_factory=list)
+    commitments_made: list[str] = Field(default_factory=list)
+    open_threads: list[str] = Field(default_factory=list)
+    cautions: list[str] = Field(default_factory=list)
+    suggested_next_step: str
+
+
+class HandoffSummary(BaseModel):
+    """Everything the human agent needs to take over the conversation.
+
+    Extra keys are ignored rather than forbidden: a brief written by an earlier
+    build is read back out of the database long after it was stored, and a
+    field added since must not turn an old row into a 500.
+    """
+
+    session_id: str
+    generated_at: str
+
+    # Why the bot stopped.
+    trigger: str
+    trigger_message: str
+    escalated_at_turn: int | None = None
+    escalation_status: int | None = None
+
+    # Who and how much.
+    customer_name: str
+    account_code: str
+    outstanding: float
+    disputed: float
+    negotiable_balance: float
+    days_overdue: int
+
+    # Where the negotiation stood when it stopped.
+    turns: int
+    strategies_used: list[str] = Field(default_factory=list)
+    agreement: Agreement | None = None
+    agreement_value: float | None = None
+    agreement_in_money: dict[str, float] | None = None
+
+    narrative: HandoffNarrative | None = None
+    narrative_error: str | None = None
+
+
 class Session(BaseModel):
     """Hot session state; the authoritative transcript is persisted in Postgres."""
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str
+    customer_id: int = 0
+    account_id: int = 0
     customer_name: str
     account_code: str
     outstanding: float
     disputed: float
     negotiable_balance: float
+    days_overdue: int = 0
+    channel: Literal["voice", "chat"] = "voice"
     dossier: str
     started_at: str
     history: list[dict[str, str]] = Field(default_factory=list)
@@ -788,11 +1108,92 @@ class Session(BaseModel):
 
 SESSIONS: dict[str, Session] = {}
 
-HUMAN_HANDOFF_PATTERN = re.compile(
-    r"\b(agent|human|representative|supervisor|manager|live\s+person|"
-    r"customer\s+care|support\s+person|escalat(?:e|ion))\b",
+# Deterministic handoff boundaries. These are evaluated in code, on the raw
+# customer message, before the model is ever called — a prompt rule is guidance
+# and would be argued with, and these two boundaries are not negotiable.
+# CLAUDE.md law 2.
+
+# Legal representation. Checked first: it is the narrower and more consequential
+# claim, and once a lawyer is acting the bot must not negotiate at all. A bare
+# noun match is safe here because these words have no benign use in a
+# collections call, and only the customer's own words are scanned.
+LEGAL_REPRESENTATION_PATTERN = re.compile(
+    r"\b(?:lawyer|solicitor|attorney|barrister|counsel)s?\b"
+    r"|\blegal\s+(?:team|rep|representative|advis[eo]r|counsel|aid|"
+    r"representation)\b"
+    r"|\b(?:my|our|his|her|their|the)\s+advocates?\b",
     re.IGNORECASE,
 )
+
+# A request for a person. The nouns stay broad — a customer who types nothing
+# but "agent" means it — so the false positives are subtracted instead, below.
+AGENT_REQUEST_PATTERN = re.compile(
+    r"\b(?:agent|human|representative|supervisor|manager|"
+    r"live\s+person|real\s+person|customer\s+care|customer\s+service|"
+    r"support\s+person|escalat(?:e|ion))\b",
+    re.IGNORECASE,
+)
+
+# Nouns that only mean a person when they are being asked for. "I want to talk
+# to someone about it" is the handoff line the demo script itself uses; "someone
+# stole my card" is a disclosure. These need the asking to be visible, so unlike
+# the nouns above they are matched with their verb.
+VAGUE_AGENT_REQUEST_PATTERN = re.compile(
+    r"\b(?:talk|speak|deal|discuss|connect|transfer|refer\s+me|chat|"
+    r"put\s+me\s+through)\b[^.?!]{0,30}?"
+    r"\b(?:some(?:one|body)|a\s+person|another\s+person|anyone\s+else)\b"
+    r"|\b(?:i\s+want|i\s+need|i['\u2019]?d\s+like|can\s+i|could\s+i|let\s+me|"
+    r"get\s+me|give\s+me)\b[^.?!]{0,30}?\bsome(?:one|body)\b",
+    re.IGNORECASE,
+)
+
+# Phrases that contain a trigger noun but are not a request for one: the
+# customer's own employer, or a turn of phrase. They are stripped from the
+# message before the pattern above runs, so "I'll ask my manager, but just get
+# me a human" still escalates while "I'll ask my manager for an advance" — a
+# disclosure about their income — does not.
+BENIGN_MENTION_PATTERN = re.compile(
+    r"\b(?:my|our)\s+(?:manager|supervisor|boss)\b"
+    # Both apostrophes: phones autocorrect the one in "I'm" to a curly quote.
+    r"|\b(?:i\s*['\u2019]?m|i\s+am|we\s+are|only)\s+human\b"
+    r"|\bhuman\s+being\b"
+    r"|\bhuman\s+error\b",
+    re.IGNORECASE,
+)
+
+
+def _handoff_trigger(message: str) -> str | None:
+    """Which deterministic handoff rule this customer message fires, if any."""
+    if LEGAL_REPRESENTATION_PATTERN.search(message):
+        return "legal_representation"
+    scrubbed = BENIGN_MENTION_PATTERN.sub(" ", message)
+    if AGENT_REQUEST_PATTERN.search(scrubbed) or VAGUE_AGENT_REQUEST_PATTERN.search(
+        scrubbed
+    ):
+        return "customer_requested_agent"
+    return None
+
+
+# What the customer hears as the bot steps back. Short, no offer, no argument.
+HANDOFF_DIALOGUE = {
+    "legal_representation": (
+        "Understood — if you have someone acting for you legally, I'll stop "
+        "here. I'm passing this to a colleague who will take it from you "
+        "directly. They can see everything we've discussed."
+    ),
+    "customer_requested_agent": (
+        "I’m transferring this conversation to a support agent now. "
+        "They can see our full chat, so you won’t need to repeat yourself."
+    ),
+}
+
+HANDOFF_THOUGHTS = {
+    "legal_representation": (
+        "The customer indicated legal representation. Negotiation stops here; "
+        "a human owns any further contact."
+    ),
+    "customer_requested_agent": "The customer explicitly requested a human agent.",
+}
 
 app = FastAPI(
     title="negotiation_bot2",
@@ -848,27 +1249,39 @@ def _restore_session(session_id: str) -> Session:
     acct = accounts[0]
     disputes = _query(DISPUTES_SQL, {"account_id": acct["account_id"]})
     ptps = _query(PTP_SQL, {"account_id": acct["account_id"]})
-    dossier, negotiable = _build_dossier(acct, disputes, ptps)
+    activity = _query(ACTIVITY_SQL, {"account_id": acct["account_id"]})
+    dossier, negotiable = _build_dossier(acct, disputes, ptps, activity)
     history: list[dict[str, str]] = []
     for item in _stored_messages(session_id):
-        if item["speaker"] == "debtor":
-            history.append({"role": "user", "content": item["dialogue"]})
-        elif item["speaker"] == "collector":
-            history.append({"role": "assistant", "content": item["dialogue"]})
+        # A human agent's replies are part of what this customer has been told,
+        # so they carry into context as things "we" said, even though the bot
+        # did not say them.
+        history.append(
+            {"role": _role(item["speaker"]).replace("agent", "assistant"),
+             "content": item["dialogue"]}
+        )
+    # The seed writes RESOLVED/ESCALATED; this file writes open/closed/agreed.
+    status = (stored["status"] or "open").lower()
     return Session(
         session_id=session_id,
+        customer_id=int(acct["customer_id"]),
+        account_id=int(acct["account_id"]),
         customer_name=acct["customer_name"],
         account_code=acct["account_code"],
         outstanding=float(acct["outstanding"]),
         disputed=float(sum(Decimal(str(d["amount"])) for d in disputes)) if disputes else 0,
         negotiable_balance=float(negotiable),
+        days_overdue=int(stored["days_overdue"] or 0),
+        # Seeded sessions carry no ledger of ours; they were engagement-centre
+        # chats, but the bot is silent on them anyway once a human has them.
+        channel=(stored["ledger"] or {}).get("channel", "voice"),
         dossier=dossier,
         started_at=stored["created_at"].isoformat(),
         history=history,
         agreement=Agreement.model_validate(stored["agreement"])
         if stored["agreement"] else None,
-        closed=stored["status"] != "open",
-        outcome=stored["status"] if stored["status"] != "open" else "in_progress",
+        closed=status != "open",
+        outcome=status if status != "open" else "in_progress",
     )
 
 
@@ -876,9 +1289,9 @@ def _cash_value(session: Session, agreement: Agreement | None) -> float | None:
     """What the agreed plan actually collects, in money."""
     if agreement is None:
         return None
-    return round(
-        session.negotiable_balance * (1 - agreement.disc_ratio / 100),
-        2,
+    return _cents(
+        Decimal(str(session.negotiable_balance))
+        * (1 - Decimal(agreement.disc_ratio) / 100)
     )
 
 
@@ -888,6 +1301,7 @@ def _generate(session: Session) -> dict[str, Any]:
         agent_name=AGENT_NAME,
         creditor=CREDITOR,
         today=date.today().isoformat(),
+        channel_brief=CHANNEL_BRIEFS[session.channel],
         dossier=session.dossier,
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
@@ -923,7 +1337,214 @@ def _generate(session: Session) -> dict[str, Any]:
     return parsed
 
 
-def _apply(session: Session, parsed: dict[str, Any]) -> TurnResponse:
+def _agreement_in_money(
+    session: Session, agreement: Agreement | None
+) -> dict[str, float] | None:
+    """The four ratio fields spelled out in currency, so nobody re-derives them."""
+    if agreement is None:
+        return None
+    balance = Decimal(str(session.negotiable_balance))
+    collected = balance * (1 - Decimal(agreement.disc_ratio) / 100)
+    upfront = collected * Decimal(agreement.pmt_ratio) / 100
+    remainder = collected - upfront
+    return {
+        # Same formula and rounding as _cash_value, so this can never disagree
+        # with the agreement_value the turn responses already report.
+        "total_collected": _cents(collected),
+        "written_off": _cents(balance - collected),
+        "upfront": _cents(upfront),
+        "upfront_due_in_days": float(agreement.pmt_days),
+        "remainder": _cents(remainder),
+        "monthly": _cents(remainder / agreement.inst_prds),
+        "months": float(agreement.inst_prds),
+    }
+
+
+def _persist_ptp(
+    session: Session, agreement: Agreement
+) -> tuple[str | None, str | None]:
+    """Book the closed deal as a promise to pay. Returns ``(code, error)``.
+
+    This is the one place the bot writes outside the ``chatbot`` schema. A deal
+    that exists only in a transcript is not a deal: the collections floor works
+    the promise queue, the kept/broken rate is computed from it, and Journey B
+    in the demo script ends on exactly this row being written.
+
+    The code is derived from the session id rather than a sequence, so a retry
+    updates the same promise instead of booking a second one against the
+    customer. Never raises — the customer has already been told the plan is
+    agreed, and failing the turn afterwards would leave the two disagreeing.
+    """
+    money = _agreement_in_money(session, agreement)
+    if money is None:  # unreachable: agreement is non-None here
+        return None, None
+
+    code = f"PTP-BOT-{session.session_id.removeprefix('sess_')[:10]}"
+    case_rows = _query(OPEN_CASE_SQL, {"account_id": session.account_id})
+    notes = (
+        f"Agreed with the negotiation bot ({session.channel}) in session "
+        f"{session.session_id}: {agreement.disc_ratio}% discount, "
+        f"${money['upfront']:,.2f} upfront within {agreement.pmt_days} days, "
+        f"then ${money['monthly']:,.2f} a month for {agreement.inst_prds} months."
+    )
+    try:
+        with psycopg.connect(DSN, connect_timeout=10) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into customer_schema.ptp
+                    (ptp_code, customer_id, account_id, case_id, promised_amount,
+                     promised_date, instalment_count, kept_amount, status,
+                     channel_code, notes)
+                values (%s, %s, %s, %s, %s, current_date + %s, %s, 0, 'PENDING',
+                        %s, %s)
+                on conflict (ptp_code) do update set
+                    promised_amount = excluded.promised_amount,
+                    promised_date = excluded.promised_date,
+                    instalment_count = excluded.instalment_count,
+                    case_id = excluded.case_id,
+                    notes = excluded.notes,
+                    updated_at = now()
+                """,
+                (
+                    code,
+                    session.customer_id,
+                    session.account_id,
+                    case_rows[0]["id"] if case_rows else None,
+                    money["total_collected"],
+                    agreement.pmt_days,
+                    # The upfront payment plus one per instalment month: what
+                    # the customer actually has to do, not a single lump.
+                    1 + agreement.inst_prds,
+                    PTP_CHANNEL[session.channel],
+                    notes[:500],
+                ),
+            )
+    except (psycopg.Error, HTTPException) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    return code, None
+
+
+def _handoff_facts(session: Session) -> dict[str, Any]:
+    """The half of the brief that is arithmetic and transcript, never inference.
+
+    Built entirely from data already in hand, so it cannot be wrong and cannot
+    fail. The model's narrative is layered on top of this, never in place of it.
+    """
+    turns = _query(HANDOFF_TURNS_SQL, {"session_id": session.session_id})
+    escalation = _escalation_row(session.session_id) or {}
+    escalated_at = escalation.get("turn_index")
+
+    # What tipped it: the last thing the customer said before the bot's closing
+    # turn. On a model-initiated escalation that is still the relevant message.
+    trigger_message = ""
+    for row in turns:
+        if (row["speaker"] or "").lower() not in CUSTOMER_SPEAKERS:
+            continue
+        if escalated_at is not None and row["index"] > escalated_at:
+            break
+        trigger_message = row["dialogue"]
+
+    strategies: list[str] = []
+    for row in turns:
+        label = row.get("strategy")
+        if label and label not in strategies:
+            strategies.append(label)
+
+    return {
+        "session_id": session.session_id,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "trigger": escalation.get("trigger") or "model_escalated",
+        "trigger_message": trigger_message,
+        "escalated_at_turn": escalated_at,
+        "escalation_status": escalation.get("status"),
+        "customer_name": session.customer_name,
+        "account_code": session.account_code,
+        "outstanding": session.outstanding,
+        "disputed": session.disputed,
+        "negotiable_balance": session.negotiable_balance,
+        "days_overdue": session.days_overdue,
+        "turns": sum(
+            1 for row in turns if (row["speaker"] or "").lower() in BOT_SPEAKERS
+        ),
+        "strategies_used": strategies,
+        "agreement": session.agreement.model_dump() if session.agreement else None,
+        "agreement_value": _cash_value(session, session.agreement),
+        "agreement_in_money": _agreement_in_money(session, session.agreement),
+        "narrative": None,
+        "narrative_error": None,
+    }
+
+
+def _generate_narrative(
+    session: Session, facts: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One model call for the readable half of the brief.
+
+    Returns ``(narrative, error)`` and never raises. A handoff that has already
+    happened must not be undone by a summariser that could not be reached.
+    """
+    transcript = "\n".join(
+        f"{'CUSTOMER' if m['role'] == 'user' else 'BOT'}: {m['content']}"
+        for m in session.history
+    )
+    money = facts["agreement_in_money"]
+    handover = (
+        f"Handover reason: {facts['trigger']}\n"
+        f"The customer's last message before handover: "
+        f"\"{facts['trigger_message']}\"\n"
+        f"Collector turns taken: {facts['turns']}\n"
+        f"Terms on the table at handover: "
+        f"{json.dumps(money) if money else 'none'}"
+    )
+    request: dict[str, Any] = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": HANDOFF_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"# ACCOUNT DOSSIER\n{session.dossier}\n\n"
+                    f"# HANDOVER\n{handover}\n\n"
+                    f"# TRANSCRIPT\n{transcript}"
+                ),
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "handoff_brief",
+                "strict": True,
+                "schema": HANDOFF_NARRATIVE_SCHEMA,
+            },
+        },
+    }
+    if TEMPERATURE >= 0:
+        request["temperature"] = TEMPERATURE
+
+    try:
+        completion = _client().chat.completions.create(**request)
+        parsed = json.loads(completion.choices[0].message.content or "")
+        return HandoffNarrative.model_validate(parsed).model_dump(), None
+    except Exception as exc:  # a brief is never worth an outage
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _complete_handoff_summary(session: Session, facts: dict[str, Any]) -> None:
+    """Background half: add the narrative to the facts already persisted."""
+    narrative, error = _generate_narrative(session, facts)
+    _persist_summary(
+        session.session_id,
+        {**facts, "narrative": narrative, "narrative_error": error},
+    )
+
+
+def _apply(
+    session: Session,
+    parsed: dict[str, Any],
+    *,
+    trigger: str = "model_escalated",
+    background: BackgroundTasks | None = None,
+) -> TurnResponse:
     """Record the turn and decide whether the conversation is over."""
     session.history.append({"role": "assistant", "content": parsed["dialogue"]})
 
@@ -950,7 +1571,23 @@ def _apply(session: Session, parsed: dict[str, Any]) -> TurnResponse:
         thoughts=parsed["thoughts"],
         proposed=session.agreement.model_dump() if session.agreement else None,
     )
-    _persist_outcome(session, action, parsed["dialogue"])
+    _persist_outcome(session, action, parsed["dialogue"], trigger)
+
+    ptp_code: str | None = None
+    ptp_error: str | None = None
+    if reached and session.agreement is not None:
+        ptp_code, ptp_error = _persist_ptp(session, session.agreement)
+
+    if action == "escalate":
+        # Write the facts immediately so the queue is never briefed with
+        # nothing, then let the model fill in the narrative after the customer
+        # has already been told they are being transferred. The agent has to
+        # claim the conversation before they can read it, which is far longer
+        # than the call takes.
+        facts = _handoff_facts(session)
+        _persist_summary(session.session_id, facts)
+        if background is not None:
+            background.add_task(_complete_handoff_summary, session, facts)
 
     return TurnResponse(
         session_id=session.session_id,
@@ -966,6 +1603,8 @@ def _apply(session: Session, parsed: dict[str, Any]) -> TurnResponse:
         closed=session.closed,
         thoughts=parsed["thoughts"],
         escalation_status=_escalation_status(session.session_id),
+        ptp_code=ptp_code,
+        ptp_error=ptp_error,
     )
 
 
@@ -987,8 +1626,13 @@ def health() -> dict[str, Any]:
 
 @app.get("/targets", response_model=list[Target])
 def list_targets(limit: int = 10, risk_level: str | None = "Critical") -> list[Target]:
-    """The Priority Targets grid: accounts ranked by money at risk."""
-    rows = _query(TARGETS_SQL, {"limit": limit, "risk_level": risk_level})
+    """The Priority Targets grid: accounts ranked by money at risk.
+
+    `?risk_level=` means every level. Without this an empty value reaches SQL as
+    '' rather than NULL, matches no row, and the grid comes back empty — which
+    reads as "no accounts at risk" rather than "you filtered them all out".
+    """
+    rows = _query(TARGETS_SQL, {"limit": limit, "risk_level": risk_level or None})
     return [
         Target(
             account_id=r["account_id"],
@@ -1012,9 +1656,9 @@ def list_targets(limit: int = 10, risk_level: str | None = "Critical") -> list[T
 
 
 @app.post("/sessions", response_model=TurnResponse)
-def start_session(req: StartRequest) -> TurnResponse:
+def start_session(req: StartRequest, background: BackgroundTasks) -> TurnResponse:
     """Open a call against a real account, returning the collector's first turn."""
-    selector = req.model_dump()
+    selector = req.model_dump(exclude={"channel"})
     supplied = {k: v for k, v in selector.items() if v is not None}
     if not supplied:
         raise HTTPException(
@@ -1038,10 +1682,28 @@ def start_session(req: StartRequest) -> TurnResponse:
 
     disputes = _query(DISPUTES_SQL, {"account_id": acct["account_id"]})
     ptps = _query(PTP_SQL, {"account_id": acct["account_id"]})
-    dossier, negotiable = _build_dossier(acct, disputes, ptps)
+    activity = _query(ACTIVITY_SQL, {"account_id": acct["account_id"]})
+    dossier, negotiable = _build_dossier(acct, disputes, ptps, activity)
+
+    # Every percentage in the prompt applies to the negotiable balance, so at
+    # zero the bot opens a call to discuss $0.00 and the whole offer table
+    # collapses. A settled account is not a negotiation; say so instead.
+    if negotiable <= 0:
+        outstanding = Decimal(str(acct["outstanding"]))
+        reason = (
+            "the balance is settled"
+            if outstanding <= 0
+            else f"all {_money(outstanding)} of it is formally disputed"
+        )
+        raise HTTPException(
+            422,
+            f"account {acct['account_code']} has nothing to negotiate — {reason}",
+        )
 
     session = Session(
         session_id=f"sess_{uuid.uuid4().hex[:20]}",
+        customer_id=int(acct["customer_id"]),
+        account_id=int(acct["account_id"]),
         customer_name=acct["customer_name"],
         account_code=acct["account_code"],
         outstanding=float(acct["outstanding"]),
@@ -1049,23 +1711,21 @@ def start_session(req: StartRequest) -> TurnResponse:
         if disputes
         else 0.0,
         negotiable_balance=float(negotiable),
+        days_overdue=int(acct.get("dpd") or 0),
+        channel=req.channel,
         dossier=dossier,
         started_at=datetime.now(UTC).isoformat(),
     )
-    session.history.append(
-        {
-            "role": "user",
-            "content": "[The customer has answered the call and has not spoken "
-            "yet. Open the conversation.]",
-        }
-    )
+    session.history.append({"role": "user", "content": OPENING_CUE[req.channel]})
     SESSIONS[session.session_id] = session
     _persist_session(session, acct)
-    return _apply(session, _generate(session))
+    return _apply(session, _generate(session), background=background)
 
 
 @app.post("/sessions/{session_id}/messages", response_model=TurnResponse)
-def send_message(session_id: str, req: MessageRequest) -> TurnResponse:
+def send_message(
+    session_id: str, req: MessageRequest, background: BackgroundTasks
+) -> TurnResponse:
     """Store the customer's reply and answer with bot or human handoff state."""
     session = _session(session_id)
     if session.closed:
@@ -1097,21 +1757,27 @@ def send_message(session_id: str, req: MessageRequest) -> TurnResponse:
     session.history.append({"role": "user", "content": req.message})
     _persist_turn(session_id, speaker="debtor", dialogue=req.message)
 
-    # A direct request for a person is deterministic and never sent back to the
-    # model. This guarantees that the bot stops at the requested boundary.
-    if HUMAN_HANDOFF_PATTERN.search(req.message):
-        return _apply(session, {
-            "thoughts": "The customer explicitly requested a human agent.",
-            "strategy": "ESTABLISH_TRUST",
-            "action": "escalate",
-            "dialogue": (
-                "I’m transferring this conversation to a support agent now. "
-                "They can see our full chat, so you won’t need to repeat yourself."
-            ),
-            "agreement": session.agreement.model_dump() if session.agreement else None,
-            "agreement_reached": False,
-        })
-    return _apply(session, _generate(session))
+    # A request for a person, or any mention of legal representation, is decided
+    # here and never sent back to the model. This is what guarantees the bot
+    # stops at the boundary rather than negotiating its way past it.
+    trigger = _handoff_trigger(req.message)
+    if trigger is not None:
+        return _apply(
+            session,
+            {
+                "thoughts": HANDOFF_THOUGHTS[trigger],
+                "strategy": "ESTABLISH_TRUST",
+                "action": "escalate",
+                "dialogue": HANDOFF_DIALOGUE[trigger],
+                "agreement": session.agreement.model_dump()
+                if session.agreement
+                else None,
+                "agreement_reached": False,
+            },
+            trigger=trigger,
+            background=background,
+        )
+    return _apply(session, _generate(session), background=background)
 
 
 @app.get("/sessions/{session_id}/messages", response_model=LiveTranscriptResponse)
@@ -1133,6 +1799,34 @@ def get_live_messages(session_id: str) -> LiveTranscriptResponse:
     )
 
 
+@app.get("/sessions/{session_id}/handoff", response_model=HandoffSummary)
+def get_handoff(session_id: str, refresh: bool = False) -> HandoffSummary:
+    """The brief a human agent reads before taking over the conversation.
+
+    Normally a read: the brief was written when the bot stepped back and is
+    served from ``chatbot.escalations.summary``. It regenerates in place when
+    asked to, and when the stored brief has no narrative — which is how a
+    failed background call, or a summary column that does not exist yet, still
+    ends up in front of the agent rather than as an empty panel.
+    """
+    session = _session(session_id)
+    if session.outcome != "escalated":
+        raise HTTPException(
+            409,
+            f"session has not been handed to a human (outcome: {session.outcome})",
+        )
+
+    stored = (_escalation_row(session_id) or {}).get("summary") if not refresh else None
+    if stored and stored.get("narrative") is not None:
+        return HandoffSummary.model_validate(stored)
+
+    facts = _handoff_facts(session)
+    narrative, error = _generate_narrative(session, facts)
+    summary = {**facts, "narrative": narrative, "narrative_error": error}
+    _persist_summary(session_id, summary)
+    return HandoffSummary.model_validate(summary)
+
+
 @app.get("/sessions/{session_id}", response_model=TranscriptResponse)
 def get_transcript(session_id: str) -> TranscriptResponse:
     session = _session(session_id)
@@ -1150,14 +1844,10 @@ def get_transcript(session_id: str) -> TranscriptResponse:
         outcome=session.outcome,
         agreement=session.agreement,
         agreement_value=_cash_value(session, session.agreement),
-        messages=[{
-            "role": (
-                "user" if row["speaker"] == "debtor"
-                else "agent" if row["speaker"] == "agent"
-                else "assistant"
-            ),
-            "content": row["dialogue"],
-        } for row in stored],
+        messages=[
+            {"role": _role(row["speaker"]), "content": row["dialogue"]}
+            for row in stored
+        ],
         dossier=session.dossier,
     )
 
