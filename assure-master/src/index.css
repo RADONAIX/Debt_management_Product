@@ -1,0 +1,228 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* RADONaix Assure+ Design System
+   White surfaces + corporate blue, aligned with the RADONaix RA (RAFMS) shell.
+   All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Surfaces — white app, faintly cool page background */
+    --background: 220 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Corporate blue primary (#2563EB) */
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --primary-light: 214 100% 97%;
+    --primary-dark: 224 76% 43%;
+
+    /* Neutral secondary */
+    --secondary: 220 16% 96%;
+    --secondary-foreground: 222 30% 25%;
+
+    --muted: 220 16% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* Accent is the interaction surface (hover / focus / selected).
+       Blue-tinted so ghost buttons and menu items read as part of the theme.
+       For "positive / healthy" semantics use --success, not --accent. */
+    --accent: 214 100% 96%;
+    --accent-foreground: 224 76% 40%;
+    --accent-light: 214 100% 98%;
+
+    /* Semantic status */
+    --success: 158 64% 40%;
+    --success-foreground: 0 0% 100%;
+    --success-light: 158 100% 96%;
+
+    --warning: 32 95% 44%;
+    --warning-foreground: 0 0% 100%;
+    --warning-light: 48 100% 96%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-light: 0 100% 97%;
+
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    /* Risk bands */
+    --risk-low: 158 64% 40%;
+    --risk-medium: 32 95% 44%;
+    --risk-high: 25 95% 53%;
+    --risk-critical: 0 72% 51%;
+
+    /* Layout & borders */
+    --border: 220 16% 90%;
+
+    /* Strategy Designer canvas. These were referenced by the canvas from the
+       start but never defined, so the surface, the node fill and the node
+       border all resolved to nothing — which is why the flow was invisible
+       against the page. */
+    --canvas: 220 20% 93%;
+    --canvas-grid: 220 14% 80%;
+    --node: 0 0% 100%;
+    --node-hover: 220 30% 99%;
+    --node-border: 220 15% 78%;
+    --flow-line: 221 65% 55%;
+    --input: 220 16% 90%;
+    --ring: 221 83% 53%;
+
+    --radius: 0.75rem;
+
+    /* Dashboard surfaces */
+    --dashboard-bg: 220 20% 98%;
+    --dashboard-card: 0 0% 100%;
+    --dashboard-border: 220 16% 90%;
+
+    /* Chart palette — blue-forward, ordered for categorical use */
+    --chart-blue: 221 83% 53%;
+    --chart-teal: 187 72% 40%;
+    --chart-cyan: 199 89% 48%;
+    --chart-indigo: 239 70% 58%;
+    --chart-sky: 205 90% 62%;
+    --chart-orange: 25 95% 53%;
+    --chart-violet: 249 48% 44%;
+    --chart-green: 158 64% 40%;
+
+    --kpi-light-blue: 199 89% 48%;
+    --button-bg: 220 16% 96%;
+    --button-border: 221 83% 53%;
+
+    /* Aging bucket palette (blue family) */
+    --ab-1: 224 76% 43%;
+    --ab-2: 221 83% 53%;
+    --ab-3: 199 89% 48%;
+    --ab-4: 207 60% 40%;
+    --ab2-1: 205 90% 62%;
+    --ab2-2: 187 72% 40%;
+    --ab2-3: 195 80% 52%;
+    --ab3-1: 189 76% 62%;
+
+    /* Sidebar — white surface, shares the header border tone (RAFMS parity) */
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 222 30% 25%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 214 100% 96%;
+    --sidebar-accent-foreground: 224 76% 40%;
+    --sidebar-border: 220 16% 90%;
+    --sidebar-ring: 221 83% 53%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(221 83% 53%), hsl(224 76% 43%));
+    --gradient-success: linear-gradient(135deg, hsl(158 64% 40%), hsl(158 64% 33%));
+    --gradient-warning: linear-gradient(135deg, hsl(32 95% 44%), hsl(25 95% 45%));
+    --gradient-danger: linear-gradient(135deg, hsl(0 72% 51%), hsl(0 72% 44%));
+
+    /* Shadows */
+    --shadow-card: 0 1px 3px 0 hsl(222 47% 11% / 0.06), 0 1px 2px 0 hsl(222 47% 11% / 0.04);
+    --shadow-elevated: 0 8px 16px -4px hsl(222 47% 11% / 0.08), 0 4px 8px -2px hsl(222 47% 11% / 0.05);
+  }
+
+  .dark {
+    --background: 222 47% 9%;
+    --foreground: 215 25% 93%;
+
+    --card: 222 40% 13%;
+    --card-foreground: 215 25% 93%;
+
+    --popover: 222 40% 13%;
+    --popover-foreground: 215 25% 93%;
+
+    --primary: 217 91% 63%;
+    --primary-foreground: 222 47% 9%;
+    --primary-light: 222 40% 18%;
+    --primary-dark: 217 91% 53%;
+
+    --secondary: 222 30% 18%;
+    --secondary-foreground: 215 25% 93%;
+
+    --muted: 222 30% 18%;
+    --muted-foreground: 219 14% 60%;
+
+    --accent: 222 35% 22%;
+    --accent-foreground: 217 91% 75%;
+    --accent-light: 222 35% 18%;
+
+    --success: 158 60% 48%;
+    --success-foreground: 222 47% 9%;
+    --success-light: 158 30% 16%;
+
+    --warning: 38 92% 58%;
+    --warning-foreground: 222 47% 9%;
+    --warning-light: 38 30% 16%;
+
+    --destructive: 0 72% 60%;
+    --destructive-foreground: 222 47% 9%;
+    --destructive-light: 0 30% 16%;
+
+    --info: 199 89% 58%;
+    --info-foreground: 222 47% 9%;
+    --chart-violet: 247 70% 72%;
+
+    --border: 222 30% 20%;
+
+    --canvas: 222 42% 11%;
+    --canvas-grid: 220 20% 26%;
+    --node: 222 38% 16%;
+    --node-hover: 222 38% 20%;
+    --node-border: 220 18% 32%;
+    --flow-line: 217 85% 68%;
+    --input: 222 30% 20%;
+    --ring: 217 91% 63%;
+
+    --dashboard-bg: 222 47% 9%;
+    --dashboard-card: 222 40% 13%;
+    --dashboard-border: 222 30% 20%;
+
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 215 25% 88%;
+    --sidebar-primary: 217 91% 63%;
+    --sidebar-primary-foreground: 222 47% 9%;
+    --sidebar-accent: 222 35% 20%;
+    --sidebar-accent-foreground: 217 91% 75%;
+    --sidebar-border: 222 30% 18%;
+    --sidebar-ring: 217 91% 63%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Aging-bucket chart swatches, driven by the tokens above */
+.bg-chart-ab-deep-blue { background-color: hsl(var(--ab-1)); }
+.bg-chart-ab-blue { background-color: hsl(var(--ab-2)); }
+.bg-chart-ab-cyan { background-color: hsl(var(--ab-3)); }
+.bg-chart-ab-teal-blue { background-color: hsl(var(--ab-4)); }
+.bg-chart-ab-light-cyan { background-color: hsl(var(--ab2-1)); }
+.bg-chart-ab-teal { background-color: hsl(var(--ab2-2)); }
+.bg-chart-ab-blue-cyan { background-color: hsl(var(--ab2-3)); }
+.bg-chart-ab-cyan-bright { background-color: hsl(var(--ab3-1)); }
+.bg-chart-ab-soft-cyan { background-color: hsl(195 80% 62%); }
+.bg-chart-ab-blue-light { background-color: hsl(213 90% 78%); }
+.bg-chart-ab-soft-teal { background-color: hsl(180 45% 62%); }
+.bg-chart-ab-teal-cyan { background-color: hsl(174 60% 55%); }
+
+/* `bg-dashboard-card`, `bg-dashboard-bg`, `shadow-card` and `shadow-elevated`
+   are generated from tailwind.config.ts — no hand-written rules needed. */

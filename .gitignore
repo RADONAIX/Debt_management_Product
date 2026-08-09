@@ -1,0 +1,38 @@
+# Secrets — every .env in the tree. The live OpenAI key, the JWT secret, the
+# database password and the bootstrap admin password all live in these.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Word lock files left by an open document
+~$*
+
+# Local logs and scratch
+*.log
+nohup.out

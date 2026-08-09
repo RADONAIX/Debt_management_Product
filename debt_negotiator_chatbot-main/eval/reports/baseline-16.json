@@ -1,0 +1,83 @@
+{
+  "agent_name": "naive-baseline",
+  "t_max": 20,
+  "models": {
+    "collector": "gpt-5.4",
+    "judge": "gpt-4.1",
+    "simulator": "gpt-5.4",
+    "synthesis": "gpt-5.4"
+  },
+  "usage": {
+    "calls": 281,
+    "total_tokens": 510774
+  },
+  "judge_calibrated": false,
+  "human_ratings": 0,
+  "overall": {
+    "n": 16,
+    "sr": 0.3125,
+    "at": 16.5625,
+    "cr": 0.284375,
+    "ce": 0.006481845238095238,
+    "sa": 1.0,
+    "ls": 1.0,
+    "us": 6.5,
+    "es": 5.875,
+    "ca": 7.75,
+    "judged": 16
+  },
+  "by_archetype": {
+    "confrontational": {
+      "n": 6,
+      "sr": 0.0,
+      "at": 20.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 7.833333333333333,
+      "es": 6.833333333333333,
+      "ca": 8.833333333333334,
+      "judged": 6
+    },
+    "avoidant": {
+      "n": 5,
+      "sr": 0.0,
+      "at": 20.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 5.6,
+      "es": 4.8,
+      "ca": 7.0,
+      "judged": 5
+    },
+    "helpless": {
+      "n": 4,
+      "sr": 1.0,
+      "at": 9.0,
+      "cr": 0.8999999999999999,
+      "ce": 0.005277281746031746,
+      "sa": 1.0,
+      "ls": 1.0,
+      "us": 5.5,
+      "es": 5.5,
+      "ca": 7.0,
+      "judged": 4
+    },
+    "cooperative": {
+      "n": 1,
+      "sr": 1.0,
+      "at": 9.0,
+      "cr": 0.95,
+      "ce": 0.011300099206349206,
+      "sa": 1.0,
+      "ls": 1.0,
+      "us": 7.0,
+      "es": 7.0,
+      "ca": 8.0,
+      "judged": 1
+    }
+  }
+}

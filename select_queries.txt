@@ -1,0 +1,293 @@
+SELECT
+
+    -------------------------------------------------------
+    -- Customer
+    -------------------------------------------------------
+    c.id AS customer_id,
+    c.customer_code,
+    c.full_name,
+    c.customer_type,
+    c.email,
+    c.msisdn,
+
+    -------------------------------------------------------
+    -- Account
+    -------------------------------------------------------
+    a.id AS account_id,
+    a.account_code,
+    a.status,
+    a.activation_date,
+    a.dpd,
+	a.subscriber_no,
+    a.outstanding,
+
+    -------------------------------------------------------
+    -- Consumer Risk Profile
+    -------------------------------------------------------
+    rp.financial_stress_score,
+    rp.responsibility_score,
+    rp.cooperation_score,
+    rp.credit_awareness_score,
+    rp.legal_awareness_score,
+    rp.employment_stability_score,
+    rp.overall_risk_score,
+    rp.risk_band,
+    rp.account_age_months,
+    rp.total_accounts,
+    rp.active_accounts,
+    rp.invoices_last_12m,
+    rp.invoices_paid_on_time,
+    rp.total_invoice_value,
+    rp.total_paid_amount,
+    rp.total_outstanding,
+    rp.avg_payment_delay_days,
+    rp.ptp_count,
+    rp.ptp_honoured,
+    rp.ptp_broken,
+    rp.disputes_raised,
+    rp.computed_at,
+
+    -------------------------------------------------------
+    -- Invoice Summary
+    -------------------------------------------------------
+    COUNT(DISTINCT i.id) AS invoice_count,
+    COALESCE(SUM(i.amount),0) AS invoice_amount,
+    COALESCE(SUM(i.paid_amount),0) AS paid_amount,
+
+    -------------------------------------------------------
+    -- Payment Summary
+    -------------------------------------------------------
+    COUNT(DISTINCT p.id) AS payment_count,
+    MAX(p.payment_date) AS last_payment_date,
+
+    -------------------------------------------------------
+    -- Promise To Pay
+    -------------------------------------------------------
+    COUNT(DISTINCT pt.id) AS total_ptp,
+
+    COUNT(DISTINCT CASE
+        WHEN pt.status='KEPT'
+        THEN pt.id
+    END) AS kept_ptp,
+
+    COUNT(DISTINCT CASE
+        WHEN pt.status IN ('BROKEN','FAILED')
+        THEN pt.id
+    END) AS broken_ptp,
+
+    -------------------------------------------------------
+    -- Disputes
+    -------------------------------------------------------
+    COUNT(DISTINCT d.id) AS dispute_count
+
+FROM risk_profile rp
+
+JOIN customer c
+    ON c.id = rp.customer_id
+
+JOIN account a
+    ON a.id = rp.account_id
+
+LEFT JOIN invoice i
+    ON i.account_id = a.id
+
+LEFT JOIN payment p
+    ON p.account_id = a.id
+
+LEFT JOIN ptp pt
+    ON pt.account_id = a.id
+
+LEFT JOIN dispute d
+    ON d.account_id = a.id
+
+WHERE c.customer_type = 'CONSUMER'
+and c.id = 1
+GROUP BY
+
+    c.id,
+    c.customer_code,
+    c.full_name,
+    c.customer_type,
+    c.email,
+    c.msisdn,
+
+    a.id,
+    a.account_code,
+    a.status,
+    a.activation_date,
+    a.dpd,
+    a.outstanding,
+
+    rp.financial_stress_score,
+    rp.responsibility_score,
+    rp.cooperation_score,
+    rp.credit_awareness_score,
+    rp.legal_awareness_score,
+    rp.employment_stability_score,
+    rp.overall_risk_score,
+    rp.risk_band,
+    rp.account_age_months,
+    rp.total_accounts,
+    rp.active_accounts,
+    rp.invoices_last_12m,
+    rp.invoices_paid_on_time,
+    rp.total_invoice_value,
+    rp.total_paid_amount,
+    rp.total_outstanding,
+    rp.avg_payment_delay_days,
+    rp.ptp_count,
+    rp.ptp_honoured,
+    rp.ptp_broken,
+    rp.disputes_raised,
+    rp.computed_at
+ORDER BY
+    rp.overall_risk_score DESC,
+    a.outstanding DESC,
+    c.customer_code;
+
+
+
+
+
+
+
+    SELECT
+
+    -------------------------------------------------------
+    -- Customer
+    -------------------------------------------------------
+    c.id AS customer_id,
+    c.customer_code,
+    c.full_name,
+    c.customer_type,
+    c.email,
+    c.msisdn,
+
+    -------------------------------------------------------
+    -- Account
+    -------------------------------------------------------
+    a.id AS account_id,
+    a.account_code,
+    a.status,
+    a.activation_date,
+    a.dpd,
+    a.outstanding,
+
+    -------------------------------------------------------
+    -- Enterprise Risk Profile
+    -------------------------------------------------------
+    rp.financial_stress_score,
+    rp.responsibility_score,
+    rp.cooperation_score,
+    rp.credit_awareness_score,
+    rp.legal_awareness_score,
+    rp.employment_stability_score,
+    rp.overall_risk_score,
+    rp.risk_band,
+    rp.account_age_months,
+    rp.total_accounts,
+    rp.active_accounts,
+    rp.invoices_last_12m,
+    rp.invoices_paid_on_time,
+    rp.total_invoice_value,
+    rp.total_paid_amount,
+    rp.total_outstanding,
+    rp.avg_payment_delay_days,
+    rp.ptp_count,
+    rp.ptp_honoured,
+    rp.ptp_broken,
+    rp.disputes_raised,
+    rp.computed_at,
+
+    -------------------------------------------------------
+    -- Invoice Summary
+    -------------------------------------------------------
+    COUNT(DISTINCT i.id)                    AS invoice_count,
+    SUM(i.amount)                           AS invoice_amount,
+    SUM(i.paid_amount)                      AS paid_amount,
+
+    -------------------------------------------------------
+    -- Payment Summary
+    -------------------------------------------------------
+    COUNT(DISTINCT p.id)                    AS payment_count,
+    MAX(p.payment_date)                     AS last_payment_date,
+
+    -------------------------------------------------------
+    -- Promise To Pay
+    -------------------------------------------------------
+    COUNT(DISTINCT pt.id)                   AS total_ptp,
+    COUNT(DISTINCT CASE WHEN pt.status='KEPT' THEN pt.id END)
+                                            AS kept_ptp,
+    COUNT(DISTINCT CASE WHEN pt.status IN ('BROKEN','FAILED') THEN pt.id END)
+                                            AS broken_ptp,
+
+    -------------------------------------------------------
+    -- Disputes
+    -------------------------------------------------------
+    COUNT(DISTINCT d.id)                    AS dispute_count
+
+FROM risk_profile rp
+
+JOIN customer c
+    ON c.id = rp.customer_id
+
+JOIN account a
+    ON a.id = rp.account_id
+
+LEFT JOIN invoice i
+    ON i.account_id = a.id
+
+LEFT JOIN payment p
+    ON p.account_id = a.id
+
+LEFT JOIN ptp pt
+    ON pt.account_id = a.id
+
+LEFT JOIN dispute d
+    ON d.account_id = a.id
+
+WHERE c.customer_type = 'ENTERPRISE'
+
+GROUP BY
+
+    c.id,
+    c.customer_code,
+    c.full_name,
+    c.customer_type,
+    c.email,
+    c.msisdn,
+
+    a.id,
+    a.account_code,
+    a.status,
+    a.activation_date,
+    a.dpd,
+    a.outstanding,
+
+    rp.financial_stress_score,
+    rp.responsibility_score,
+    rp.cooperation_score,
+    rp.credit_awareness_score,
+    rp.legal_awareness_score,
+    rp.employment_stability_score,
+    rp.overall_risk_score,
+    rp.risk_band,
+    rp.account_age_months,
+    rp.total_accounts,
+    rp.active_accounts,
+    rp.invoices_last_12m,
+    rp.invoices_paid_on_time,
+    rp.total_invoice_value,
+    rp.total_paid_amount,
+    rp.total_outstanding,
+    rp.avg_payment_delay_days,
+    rp.ptp_count,
+    rp.ptp_honoured,
+    rp.ptp_broken,
+    rp.disputes_raised,
+    rp.computed_at
+
+ORDER BY
+    rp.overall_risk_score DESC,
+    a.outstanding DESC,
+    c.customer_code;

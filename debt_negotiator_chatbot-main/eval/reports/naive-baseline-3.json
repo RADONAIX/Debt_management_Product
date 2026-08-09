@@ -1,0 +1,71 @@
+{
+  "agent_name": "naive-baseline",
+  "t_max": 20,
+  "models": {
+    "collector": "gpt-5.4",
+    "extractor": "gpt-5.4",
+    "judge": "gpt-4.1",
+    "simulator": "gpt-5.4",
+    "synthesis": "gpt-5.4"
+  },
+  "usage": {
+    "calls": 45,
+    "total_tokens": 75580
+  },
+  "judge_calibrated": false,
+  "human_ratings": 0,
+  "overall": {
+    "n": 3,
+    "sr": 0.6666666666666666,
+    "at": 15.0,
+    "cr": 0.5666666666666667,
+    "ce": 0.011618055555555555,
+    "sa": 1.0,
+    "ls": 1.0,
+    "us": null,
+    "es": null,
+    "ca": null,
+    "judged": 0
+  },
+  "by_archetype": {
+    "avoidant": {
+      "n": 1,
+      "sr": 0.0,
+      "at": 20.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": null,
+      "es": null,
+      "ca": null,
+      "judged": 0
+    },
+    "helpless": {
+      "n": 1,
+      "sr": 1.0,
+      "at": 16.0,
+      "cr": 0.7,
+      "ce": 0.005875,
+      "sa": 1.0,
+      "ls": 1.0,
+      "us": null,
+      "es": null,
+      "ca": null,
+      "judged": 0
+    },
+    "cooperative": {
+      "n": 1,
+      "sr": 1.0,
+      "at": 9.0,
+      "cr": 1.0,
+      "ce": 0.017361111111111112,
+      "sa": 1.0,
+      "ls": 1.0,
+      "us": null,
+      "es": null,
+      "ca": null,
+      "judged": 0
+    }
+  }
+}

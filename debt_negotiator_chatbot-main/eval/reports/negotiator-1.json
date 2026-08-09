@@ -1,0 +1,45 @@
+{
+  "agent_name": "negotiator",
+  "t_max": 20,
+  "models": {
+    "collector": "gpt-5.4",
+    "extractor": "gpt-5.4",
+    "judge": "gpt-4.1",
+    "simulator": "gpt-5.4",
+    "synthesis": "gpt-5.4"
+  },
+  "usage": {
+    "calls": 8,
+    "total_tokens": 12212
+  },
+  "judge_calibrated": false,
+  "human_ratings": 0,
+  "overall": {
+    "n": 1,
+    "sr": 0.0,
+    "at": 6.0,
+    "cr": 0.0,
+    "ce": 0.0,
+    "sa": 0.0,
+    "ls": 0.0,
+    "us": null,
+    "es": null,
+    "ca": null,
+    "judged": 0
+  },
+  "by_archetype": {
+    "avoidant": {
+      "n": 1,
+      "sr": 0.0,
+      "at": 6.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": null,
+      "es": null,
+      "ca": null,
+      "judged": 0
+    }
+  }
+}

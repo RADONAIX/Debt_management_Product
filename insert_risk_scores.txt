@@ -1,0 +1,323 @@
+INSERT INTO subscriber_risk_profile
+(
+    subscriber_id,
+
+    account_age_months,
+    invoices_last_12m,
+    invoices_paid_on_time,
+    avg_payment_delay_days,
+
+    ptp_count,
+    ptp_honoured,
+    ptp_broken,
+
+    disputes_raised,
+
+    successful_contacts,
+    failed_contacts,
+
+    financial_stress_score,
+    responsibility_score,
+    cooperation_score,
+    credit_awareness_score,
+    legal_awareness_score,
+    employment_stability_score,
+    overall_risk_score,
+
+    behaviour_type,
+    risk_band,
+    recommended_strategy
+)
+
+SELECT
+
+    c.id,
+
+    ------------------------------------------------------------------
+    -- ACCOUNT AGE
+    ------------------------------------------------------------------
+    (
+    DATE_PART('year', AGE(CURRENT_DATE, activation_date)) * 12
+    +
+    DATE_PART('month', AGE(CURRENT_DATE, activation_date))
+)::int,
+
+    ------------------------------------------------------------------
+    -- INVOICES
+    ------------------------------------------------------------------
+    COUNT(DISTINCT i.id),
+
+    COUNT(
+        CASE
+            WHEN i.status = 'PAID'
+            THEN 1
+        END
+    ),
+
+    ------------------------------------------------------------------
+    -- PAYMENT DELAY
+    ------------------------------------------------------------------
+    COALESCE(
+        AVG(
+            GREATEST(
+                0,
+                p.payment_date::date - i.due_date
+            )
+        ),
+        0
+    ),
+
+    ------------------------------------------------------------------
+    -- PTP
+    ------------------------------------------------------------------
+    COUNT(DISTINCT pt.id),
+
+    COUNT(
+        CASE
+            WHEN pt.status = 'HONOURED'
+            THEN 1
+        END
+    ),
+
+    COUNT(
+        CASE
+            WHEN pt.status = 'BROKEN'
+            THEN 1
+        END
+    ),
+
+    ------------------------------------------------------------------
+    -- DISPUTES
+    ------------------------------------------------------------------
+    COUNT(DISTINCT d.id),
+
+    ------------------------------------------------------------------
+    -- CONTACTS
+    ------------------------------------------------------------------
+    a.contact_successes,
+
+    a.contact_attempts - a.contact_successes,
+
+    ------------------------------------------------------------------
+    -- FINANCIAL STRESS SCORE
+    ------------------------------------------------------------------
+    CASE
+        WHEN a.outstanding >= 200000 THEN 100
+        WHEN a.outstanding >= 100000 THEN 80
+        WHEN a.outstanding >= 50000  THEN 60
+        WHEN a.outstanding >= 25000  THEN 40
+        ELSE 20
+    END,
+
+    ------------------------------------------------------------------
+    -- RESPONSIBILITY SCORE
+    ------------------------------------------------------------------
+    LEAST(
+        100,
+        GREATEST(
+            0,
+
+            100
+
+            - (
+                COUNT(
+                    CASE
+                        WHEN pt.status = 'BROKEN'
+                        THEN 1
+                    END
+                ) * 15
+            )
+
+            - (
+                COUNT(d.id) * 5
+            )
+
+            - (
+    COALESCE(
+        AVG(
+            GREATEST(
+                0,
+                p.payment_date::date - i.due_date
+            )
+        ),
+        0
+    ) * 0.5
+)
+        )
+    ),
+
+    ------------------------------------------------------------------
+    -- COOPERATION SCORE
+    ------------------------------------------------------------------
+    ROUND(
+        (
+            a.contact_successes::numeric
+            /
+            NULLIF(a.contact_attempts, 0)
+        ) * 100,
+        2
+    ),
+
+    ------------------------------------------------------------------
+    -- CREDIT AWARENESS SCORE
+    ------------------------------------------------------------------
+    CASE
+        WHEN a.dpd < 15 THEN 95
+        WHEN a.dpd < 30 THEN 80
+        WHEN a.dpd < 60 THEN 65
+        WHEN a.dpd < 90 THEN 45
+        ELSE 20
+    END,
+
+    ------------------------------------------------------------------
+    -- LEGAL AWARENESS SCORE
+    ------------------------------------------------------------------
+    CASE
+        WHEN COUNT(d.id) = 0 THEN 90
+        WHEN COUNT(d.id) = 1 THEN 70
+        WHEN COUNT(d.id) = 2 THEN 50
+        ELSE 20
+    END,
+
+    ------------------------------------------------------------------
+    -- EMPLOYMENT STABILITY SCORE
+    ------------------------------------------------------------------
+    CASE
+        WHEN c.customer_type = 'ENTERPRISE' THEN 90
+        WHEN c.customer_type = 'GOVERNMENT' THEN 95
+        ELSE 70
+    END,
+
+    ------------------------------------------------------------------
+    -- OVERALL RISK SCORE
+    ------------------------------------------------------------------
+   ROUND(
+    (
+        (
+            -- DPD
+            (
+                CASE
+                    WHEN a.dpd >= 180 THEN 100
+                    WHEN a.dpd >= 120 THEN 90
+                    WHEN a.dpd >= 90 THEN 80
+                    WHEN a.dpd >= 60 THEN 60
+                    WHEN a.dpd >= 30 THEN 40
+                    ELSE 20
+                END
+            ) * 0.25
+
+            +
+
+            (
+                CASE
+                    WHEN a.outstanding >= 200000 THEN 100
+                    WHEN a.outstanding >= 100000 THEN 80
+                    WHEN a.outstanding >= 50000 THEN 60
+                    WHEN a.outstanding >= 25000 THEN 40
+                    ELSE 20
+                END
+            ) * 0.20
+
+            +
+
+            (
+                (
+                    a.contact_successes::numeric
+                    /
+                    NULLIF(a.contact_attempts, 0)
+                ) * 100
+            ) * 0.15
+
+            +
+
+            (
+                100
+                -
+                (
+                    COUNT(
+                        CASE
+                            WHEN pt.status = 'BROKEN'
+                            THEN 1
+                        END
+                    ) * 15
+                )
+            ) * 0.15
+
+        ) / 0.75
+    ),
+    2
+),
+
+    ------------------------------------------------------------------
+    -- BEHAVIOUR TYPE
+    ------------------------------------------------------------------
+CASE
+
+    WHEN COUNT(
+             CASE
+                 WHEN pt.status='BROKEN'
+                 THEN 1
+             END
+         ) >= 3
+    THEN 'Habitual Defaulter'
+
+    WHEN a.contact_successes = 0
+    THEN 'Avoidant'
+
+    WHEN a.outstanding > 150000
+    THEN 'High Value'
+
+    WHEN c.customer_type='ENTERPRISE'
+    THEN 'Corporate'
+
+    WHEN a.dpd < 30 AND a.contact_successes > 5
+    THEN 'Reliable'
+
+    WHEN a.dpd < 60
+    THEN 'Cooperative'
+
+    ELSE 'Financially Distressed'
+
+END,
+
+    ------------------------------------------------------------------
+    -- RISK BAND
+    ------------------------------------------------------------------
+    CASE
+        WHEN a.dpd < 30 THEN 'LOW'
+        WHEN a.dpd < 60 THEN 'MEDIUM'
+        WHEN a.dpd < 90 THEN 'HIGH'
+        ELSE 'CRITICAL'
+    END,
+
+    ------------------------------------------------------------------
+    -- RECOMMENDED STRATEGY
+    ------------------------------------------------------------------
+    CASE
+        WHEN a.dpd < 30 THEN 'Early Reminder'
+        WHEN a.dpd < 60 THEN 'Soft Collection'
+        WHEN a.dpd < 90 THEN 'Intensive Collection'
+        ELSE 'Legal Escalation'
+    END
+
+FROM customer c
+
+JOIN account a
+    ON a.customer_id = c.id
+
+LEFT JOIN invoice i
+    ON i.account_id = a.id
+
+LEFT JOIN payment p
+    ON p.account_id = a.id
+
+LEFT JOIN ptp pt
+    ON pt.account_id = a.id
+
+LEFT JOIN dispute d
+    ON d.account_id = a.id
+-- where a.status != 'DELINQUENT'
+GROUP BY
+
+    c.id,
+    a.id;

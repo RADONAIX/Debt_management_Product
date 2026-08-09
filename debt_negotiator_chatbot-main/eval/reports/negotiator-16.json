@@ -1,0 +1,94 @@
+{
+  "agent_name": "negotiator",
+  "t_max": 20,
+  "models": {
+    "collector": "gpt-5.4",
+    "extractor": "gpt-5.4",
+    "judge": "gpt-4.1",
+    "simulator": "gpt-5.4",
+    "synthesis": "gpt-5.4"
+  },
+  "usage": {
+    "calls": 352,
+    "total_tokens": 698138
+  },
+  "judge_calibrated": false,
+  "human_ratings": 0,
+  "overall": {
+    "n": 16,
+    "sr": 0.0,
+    "er": 0.4375,
+    "sr_eng": 0.0,
+    "at": 14.625,
+    "cr": 0.0,
+    "ce": 0.0,
+    "sa": 0.0,
+    "ls": 0.0,
+    "us": 6.5625,
+    "es": 6.875,
+    "ca": 7.9375,
+    "judged": 16
+  },
+  "by_archetype": {
+    "confrontational": {
+      "n": 6,
+      "sr": 0.0,
+      "er": 1.0,
+      "sr_eng": 0.0,
+      "at": 6.666666666666667,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 5.666666666666667,
+      "es": 5.833333333333333,
+      "ca": 7.333333333333333,
+      "judged": 6
+    },
+    "avoidant": {
+      "n": 5,
+      "sr": 0.0,
+      "er": 0.0,
+      "sr_eng": 0.0,
+      "at": 20.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 6.6,
+      "es": 6.6,
+      "ca": 7.8,
+      "judged": 5
+    },
+    "helpless": {
+      "n": 4,
+      "sr": 0.0,
+      "er": 0.0,
+      "sr_eng": 0.0,
+      "at": 20.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 7.5,
+      "es": 8.5,
+      "ca": 8.75,
+      "judged": 4
+    },
+    "cooperative": {
+      "n": 1,
+      "sr": 0.0,
+      "er": 1.0,
+      "sr_eng": 0.0,
+      "at": 14.0,
+      "cr": 0.0,
+      "ce": 0.0,
+      "sa": 0.0,
+      "ls": 0.0,
+      "us": 8.0,
+      "es": 8.0,
+      "ca": 9.0,
+      "judged": 1
+    }
+  }
+}
